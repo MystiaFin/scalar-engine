@@ -1,2 +1,4 @@
 credentials.json
+scalar.db
+.env
 token.json

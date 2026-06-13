@@ -8,10 +8,15 @@ import (
 	"scalar-rebuild/internal/routes"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
 )
 
 func main() {
+	// load .env
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, relying on system environment variables")
+	}
 	// init database
 	db.Init()
 
@@ -34,7 +39,7 @@ func main() {
 	r := gin.Default()
 	routes.Register(r)
 
-	log.Println("scalar running on :8080")
+	log.Println("scalar running on :7225")
 
 	// 2. Serve your CSS/JS
 	r.Static("/static", "./frontend-folder")
@@ -44,5 +49,5 @@ func main() {
 		c.File("./frontend-folder/index.html")
 	})
 
-	r.Run(":8080")
+	r.Run(":7225")
 }

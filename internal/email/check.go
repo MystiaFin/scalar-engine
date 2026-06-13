@@ -2,18 +2,27 @@ package email
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"time"
 	"regexp"
 	"strings"
-	"time"
 
-	"google.golang.org/api/gmail/v1"
 	"scalar-rebuild/internal/models"
 	"scalar-rebuild/internal/repository"
+
+	"github.com/emersion/go-imap"
+	"github.com/emersion/go-imap/client"
+	"github.com/emersion/go-message/mail"
 )
+
+func hashMessageID(messageID string) string {
+	h := sha256.Sum256([]byte(messageID))
+	return hex.EncodeToString(h[:])
+}
 
 var htmlTagRe = regexp.MustCompile(`<[^>]+>`)
 
@@ -28,108 +37,129 @@ func stripHTML(raw string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-func extractFromParts(parts []*gmail.MessagePart) string {
-	// First pass: prefer text/plain
-	for _, part := range parts {
-		if part.MimeType == "text/plain" && part.Body != nil && part.Body.Data != "" {
-			data, err := base64.URLEncoding.DecodeString(part.Body.Data)
-			if err == nil {
-				return string(data)
-			}
-		}
+// FetchCleanEmailText parses the raw MIME data, preferring plain text but falling back to stripped HTML.
+func FetchCleanEmailText(msg *imap.Message, section *imap.BodySectionName) (string, error) {
+	r := msg.GetBody(section)
+	if r == nil {
+		return "", fmt.Errorf("server didn't return message body")
 	}
 
-	// Second pass: recurse into multipart/* containers
-	for _, part := range parts {
-		if strings.HasPrefix(part.MimeType, "multipart/") {
-			if result := extractFromParts(part.Parts); result != "" {
-				return result
-			}
-		}
-	}
-
-	// Last resort: fall back to text/html and strip tags
-	for _, part := range parts {
-		if part.MimeType == "text/html" && part.Body != nil && part.Body.Data != "" {
-			data, err := base64.URLEncoding.DecodeString(part.Body.Data)
-			if err == nil {
-				return stripHTML(string(data))
-			}
-		}
-	}
-
-	return ""
-}
-
-func extractBody(payload *gmail.MessagePart) string {
-	// Try root body first (simple non-multipart emails)
-	if payload.Body != nil && payload.Body.Data != "" {
-		data, err := base64.URLEncoding.DecodeString(payload.Body.Data)
-		if err == nil {
-			return string(data)
-		}
-	}
-
-	return extractFromParts(payload.Parts)
-}
-
-func hashMessageID(messageID string) string {
-	h := sha256.Sum256([]byte(messageID))
-	return hex.EncodeToString(h[:])
-}
-
-func Check() {
-	log.Println("starting email check")
-
-	twoWeeksAgo := time.Now().AddDate(0, 0, -14).Unix()
-	query := fmt.Sprintf("in:inbox after:%d", twoWeeksAgo)
-
-	srv := NewGmailService()
-	r, err := srv.Users.Messages.List("me").Q(query).Do()
+	mr, err := mail.CreateReader(r)
 	if err != nil {
-		log.Printf("unable to retrieve messages: %v", err)
-		return
+		return "", err
 	}
 
-	if len(r.Messages) == 0 {
-		log.Println("no new messages found")
-		return
-	}
+	var htmlFallback string
 
-	log.Printf("found %d new messages", len(r.Messages))
-
-	for _, msg := range r.Messages {
-		fullMsg, err := srv.Users.Messages.Get("me", msg.Id).Format("full").Do()
-		if err != nil {
-			log.Printf("error getting message %s: %v", msg.Id, err)
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			log.Println("MIME parse error:", err)
 			continue
 		}
 
-		var subject, from, messageID, date string
-		for _, header := range fullMsg.Payload.Headers {
-			switch header.Name {
-			case "Subject":
-				subject = header.Value
-			case "From":
-				from = header.Value
-			case "Message-ID":
-				messageID = header.Value
-			case "Date":
-				date = header.Value
+		switch h := p.Header.(type) {
+		case *mail.InlineHeader:
+			contentType, _, _ := h.ContentType()
+			
+			if contentType == "text/plain" {
+				b, _ := io.ReadAll(p.Body)
+				return string(b), nil
+			} else if contentType == "text/html" {
+				b, _ := io.ReadAll(p.Body)
+				htmlFallback = string(b)
 			}
 		}
+	}
+
+	if htmlFallback != "" {
+		return stripHTML(htmlFallback), nil
+	}
+
+	return "", fmt.Errorf("no text body found at all")
+}
+
+func Check() {
+	log.Println("starting IMAP email check")
+
+	emailAddress := os.Getenv("SCALAR_EMAIL")
+	appPassword := os.Getenv("SCALAR_APP_PASSWORD")
+
+	if emailAddress == "" || appPassword == "" {
+		log.Println("SCALAR_EMAIL or SCALAR_APP_PASSWORD environment variables not set. Skipping check.")
+		return
+	}
+
+	log.Println("Connecting to imap.gmail.com:993...")
+	c, err := client.DialTLS("imap.gmail.com:993", nil)
+	if err != nil {
+		log.Printf("IMAP DialTLS error: %v", err)
+		return
+	}
+	defer c.Logout()
+
+	if err := c.Login(emailAddress, appPassword); err != nil {
+		log.Printf("IMAP Login error: %v", err)
+		return
+	}
+
+	mbox, err := c.Select("INBOX", false)
+	if err != nil {
+		log.Printf("IMAP Select INBOX error: %v", err)
+		return
+	}
+
+	if mbox.Messages == 0 {
+		log.Println("Inbox is empty.")
+		return
+	}
+
+	twoWeeksAgo := time.Now().AddDate(0, 0, -14)
+	criteria := imap.NewSearchCriteria()
+	criteria.Since = twoWeeksAgo
+
+	uids, err := c.Search(criteria)
+	if err != nil {
+		log.Printf("IMAP Search error: %v", err)
+		return
+	}
+
+	if len(uids) == 0 {
+		log.Println("no new messages found in the last 14 days")
+		return
+	}
+
+	log.Printf("found %d messages to process", len(uids))
+
+	seqset := new(imap.SeqSet)
+	seqset.AddNum(uids...)
+
+	messages := make(chan *imap.Message, len(uids))
+	go func() {
+		if err := c.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope}, messages); err != nil {
+			log.Printf("IMAP Envelope Fetch error: %v", err)
+		}
+	}()
+
+	for msg := range messages {
+		subject := msg.Envelope.Subject
+		from := ""
+		if len(msg.Envelope.From) > 0 {
+			from = msg.Envelope.From[0].Address()
+		}
+		messageID := msg.Envelope.MessageId
+		date := msg.Envelope.Date
 
 		if !IsExpenseReceipt(subject, from) {
 			continue
 		}
 
-		// parse email date header, fall back to today if it fails
-		parsedDate := parseEmailDate(date)
-
+		parsedDate := date.Format("2006-01-02")
 		emailHash := hashMessageID(messageID)
 
 		exists, err := repository.ExistsByHash(emailHash)
-
 		if err != nil {
 			log.Printf("error checking hash: %v", err)
 			continue
@@ -139,7 +169,24 @@ func Check() {
 			continue
 		}
 
-		body := extractBody(fullMsg.Payload)
+		bodySeqset := new(imap.SeqSet)
+		bodySeqset.AddNum(msg.SeqNum)
+
+		bodyMessages := make(chan *imap.Message, 1)
+		section := &imap.BodySectionName{}
+
+		go func() {
+			if err := c.Fetch(bodySeqset, []imap.FetchItem{section.FetchItem()}, bodyMessages); err != nil {
+				log.Printf("IMAP Body Fetch error: %v", err)
+			}
+		}()
+
+		bodyMsg := <-bodyMessages
+		body, err := FetchCleanEmailText(bodyMsg, section)
+		if err != nil {
+			log.Printf("error fetching clean text for %s: %v", subject, err)
+			continue
+		}
 
 		log.Printf("potential expense found: %s — sending to ollama", subject)
 
@@ -168,23 +215,4 @@ func Check() {
 
 		log.Printf("saved: %s — %.0f — %s", tx.Merchant, tx.Amount, tx.Category)
 	}
-}
-
-// parseEmailDate tries common RFC email date formats and falls back to today.
-func parseEmailDate(raw string) string {
-	formats := []string{
-		"Mon, 2 Jan 2006 15:04:05 -0700",
-		"Mon, 2 Jan 2006 15:04:05 +0000 (UTC)",
-		"2 Jan 2006 15:04:05 -0700",
-		"Mon, 2 Jan 2006 15:04:05 MST",
-	}
-
-	for _, layout := range formats {
-		t, err := time.Parse(layout, strings.TrimSpace(raw))
-		if err == nil {
-			return t.Format("2006-01-02")
-		}
-	}
-
-	return time.Now().Format("2006-01-02")
 }
