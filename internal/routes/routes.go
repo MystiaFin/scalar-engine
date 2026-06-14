@@ -10,5 +10,6 @@ func Register(r *gin.Engine) {
 	{
 		api.GET("/transactions", handlers.GetTransactions)
 		api.PATCH("/transactions/:id", handlers.UpdateCategory)
+		api.GET("/models", handlers.GetAvailableModels)
 	}
 }
