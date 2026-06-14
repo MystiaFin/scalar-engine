@@ -34,6 +34,7 @@ func createTables() {
 			category    VARCHAR(100),
 			is_expense  BOOLEAN,
 			date        TIMESTAMP,
+			description TEXT,
 			confirmed   BOOLEAN DEFAULT FALSE,
 			updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
@@ -41,4 +42,6 @@ func createTables() {
 	if err != nil {
 		log.Fatalf("unable to create tables: %v", err)
 	}
+
+	DB.Exec(`ALTER TABLE transactions ADD COLUMN description TEXT`)
 }

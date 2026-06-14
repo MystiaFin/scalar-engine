@@ -62,17 +62,18 @@ nix develop
 | Method | Path                     | Description                                  |
 |--------|--------------------------|----------------------------------------------|
 | GET    | `/api/transactions`      | List all transactions, newest first          |
-| PATCH  | `/api/transactions/:id`  | Update category for all entries by merchant  |
+| PATCH  | `/api/transactions/:id`  | Update category, description, and expense flag for all entries by merchant  |
 
 **PATCH body:**
 ```json
 {
   "category": "food & drink",
-  "is_expense": true
+  "is_expense": true,
+  "description": "lunch at padang"
 }
 ```
 
-This bulk-updates every transaction sharing the same merchant name and marks them as confirmed. Confirmed transactions are fed back as few-shot examples in future LLM prompts to improve accuracy.
+All fields are optional. This bulk-updates every transaction sharing the same merchant name, sets `confirmed = true`, and updates `description` if provided. Confirmed transactions are fed back as few-shot examples in future LLM prompts to improve accuracy.
 
 ## Project structure
 

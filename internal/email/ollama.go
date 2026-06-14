@@ -31,23 +31,17 @@ type ollamaResponse struct {
 }
 
 var extractSchema = json.RawMessage(`{
-	"type": "object",
-	"properties": {
-		"merchant": {
-			"type": "string"
-		},
-		"amount": {
-			"type": "number"
-		},
-		"category": {
-			"type": "string",
-			"enum": ["food & drink", "transport", "utilities", "entertainment", "shopping", "health", "transfer", "other"]
-		},
-		"is_expense": {
-			"type": "boolean"
-		}
-	},
-	"required": ["merchant", "amount", "category", "is_expense"]
+    "type": "object",
+    "properties": {
+        "merchant":   { "type": "string" },
+        "amount":     { "type": "number" },
+        "category": {
+            "type": "string",
+            "enum": ["food & drink", "transport", "utilities", "entertainment", "shopping", "health", "transfer", "other"]
+        },
+        "is_expense": { "type": "boolean" }
+    },
+    "required": ["merchant", "amount", "category", "is_expense"]
 }`)
 
 func buildFewShotBlock(examples []models.Transaction) string {
@@ -77,32 +71,32 @@ func AskOllama(subject, body string) (TransactionResult, error) {
 
 	fewShot := buildFewShotBlock(examples)
 
-	prompt := fmt.Sprintf(`You are parsing a financial transaction email for an Indonesian user.
+	prompt := fmt.Sprintf(`You are parsing a financial transaction receipt or email.
 Extract the merchant name, amount, category, and whether it is an expense.
 
-Category guide (with examples):
-- food & drink  : restaurants, cafes, food stalls, warung, nasi, mie, bakso, ayam, kopi, boba, jus, snacks, any food or beverage purchase
-- health        : pharmacy (apotek), clinic, hospital, doctor, herbal drinks, jamu, supplement, medical
-- transport     : Grab, Gojek, toll, parking, fuel (bensin), KRL, MRT, Transjakarta, bus, taxi
-- utilities     : PLN (electricity), PDAM (water), internet, phone credit (pulsa), monthly bills
-- entertainment : cinema, streaming (Netflix, Spotify), games, events, hobbies
-- shopping      : clothing, electronics, books, household items, marketplace (Tokopedia, Shopee)
-- transfer      : bank transfer, virtual account payment, QRIS, e-wallet top-up (GoPay, OVO, Dana)
+Category guide:
+- food & drink  : restaurants, cafes, groceries, snacks, coffee shops, delivery
+- health        : pharmacy, clinic, hospital, doctor, supplements, medical
+- transport     : ride-sharing (Uber, Lyft), public transit, toll, parking, fuel, flights
+- utilities     : electricity, water, internet, mobile phone plans, monthly subscriptions
+- entertainment : cinema, streaming (Netflix, Spotify), gaming, events, hobbies
+- shopping      : clothing, electronics, books, household items, retail, marketplaces (Amazon)
+- transfer      : bank transfers, digital wallet top-ups (PayPal, Venmo, Apple Pay)
 - other         : anything that clearly does not fit the above
 
 %sSubject: %s
 Body: %s
 
 Rules:
-- merchant: clean store or service name only — no HTML, no trailing letters like "J", no extra text
-- amount: total transaction value as a plain number in IDR, no currency symbol. Use 0 if not found.
-- category: pick the single best fit from the list above
-- is_expense: true if money is going out, false if money is coming in
+- merchant: extract ONLY the core primary brand name. Strip out payment gateways (e.g., Stripe, PayPal, Square), locations/branches, corporate suffixes (e.g., LLC, Inc, Ltd), and ignore receipt/order IDs.
+- amount: total transaction value as a plain number. Strip ALL currency symbols ($, €, £, Rp, USD, etc.). Use 0 if not found.
+- category: pick the single best fit from the list above.
+- is_expense: true if money is going out, false if money is coming in.
 
 Respond only with the JSON object.`, fewShot, subject, body)
 
 	reqBody, err := json.Marshal(ollamaRequest{
-		Model:  "qwen3:1.7b",
+		Model:  "llama3:8b",
 		Prompt: prompt,
 		Format: extractSchema,
 		Stream: false,

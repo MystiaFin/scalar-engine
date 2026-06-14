@@ -28,6 +28,7 @@ func UpdateCategory(c *gin.Context) {
 	var body struct {
 		Category  string `json:"category"`
 		IsExpense bool   `json:"is_expense"`
+		Description string `json:"description"`
 	}
 
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -47,7 +48,7 @@ func UpdateCategory(c *gin.Context) {
 	}
 
 	// bulk update every entry with the same merchant
-	affected, err := repository.UpdateCategoryByMerchant(tx.Merchant, body.Category, body.IsExpense)
+	affected, err := repository.UpdateByMerchant(tx.Merchant, body.Category, body.IsExpense, body.Description)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

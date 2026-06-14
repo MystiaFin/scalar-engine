@@ -7,9 +7,10 @@ import (
 	"io"
 	"log"
 	"os"
-	"time"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"scalar-rebuild/internal/models"
 	"scalar-rebuild/internal/repository"
@@ -37,7 +38,6 @@ func stripHTML(raw string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// FetchCleanEmailText parses the raw MIME data, preferring plain text but falling back to stripped HTML.
 func FetchCleanEmailText(msg *imap.Message, section *imap.BodySectionName) (string, error) {
 	r := msg.GetBody(section)
 	if r == nil {
@@ -63,7 +63,6 @@ func FetchCleanEmailText(msg *imap.Message, section *imap.BodySectionName) (stri
 		switch h := p.Header.(type) {
 		case *mail.InlineHeader:
 			contentType, _, _ := h.ContentType()
-			
 			if contentType == "text/plain" {
 				b, _ := io.ReadAll(p.Body)
 				return string(b), nil
@@ -143,7 +142,18 @@ func Check() {
 		}
 	}()
 
+	var allMsgs []*imap.Message
 	for msg := range messages {
+		allMsgs = append(allMsgs, msg)
+	}
+
+	sort.Slice(allMsgs, func(i, j int) bool {
+		return allMsgs[i].Envelope.Date.After(allMsgs[j].Envelope.Date)
+	})
+
+	log.Printf("processing %d messages, latest first", len(allMsgs))
+
+	for _, msg := range allMsgs {
 		subject := msg.Envelope.Subject
 		from := ""
 		if len(msg.Envelope.From) > 0 {
@@ -171,10 +181,8 @@ func Check() {
 
 		bodySeqset := new(imap.SeqSet)
 		bodySeqset.AddNum(msg.SeqNum)
-
 		bodyMessages := make(chan *imap.Message, 1)
 		section := &imap.BodySectionName{}
-
 		go func() {
 			if err := c.Fetch(bodySeqset, []imap.FetchItem{section.FetchItem()}, bodyMessages); err != nil {
 				log.Printf("IMAP Body Fetch error: %v", err)
@@ -198,6 +206,15 @@ func Check() {
 
 		log.Printf("ollama result: merchant=%s amount=%.0f category=%s is_expense=%v",
 			result.Merchant, result.Amount, result.Category, result.IsExpense)
+
+		dupExists, err := repository.IsDuplicateTransaction(result.Merchant, result.Amount, parsedDate)
+		if err != nil {
+			log.Printf("error checking duplicate: %v", err)
+		} else if dupExists {
+			log.Printf("duplicate skipped (merchant=%s amount=%.0f date=%s): %s",
+				result.Merchant, result.Amount, parsedDate, subject)
+			continue
+		}
 
 		tx := models.Transaction{
 			EmailHash: emailHash,
