@@ -155,12 +155,21 @@ func GetConfirmedExamples(limit int) ([]models.Transaction, error) {
 	return results, nil
 }
 
-func UpdateByMerchant(merchant, category string, isExpense bool, description string) (int64, error) {
+func UpdateByID(id int64, category string, isExpense bool, description string) error {
+	_, err := db.DB.Exec(`
+		UPDATE transactions
+		SET category = ?, is_expense = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, category, isExpense, description, id)
+	return err
+}
+
+func UpdateByMerchant(merchant, category string, isExpense bool, description string, confirmed bool) (int64, error) {
 	result, err := db.DB.Exec(`
 		UPDATE transactions
-		SET category = ?, is_expense = ?, description = ?, confirmed = TRUE, updated_at = CURRENT_TIMESTAMP
+		SET category = ?, is_expense = ?, description = ?, confirmed = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE merchant = ?
-	`, category, isExpense, description, merchant)
+	`, category, isExpense, description, confirmed, merchant)
 	if err != nil {
 		return 0, err
 	}

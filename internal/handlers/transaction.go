@@ -26,9 +26,10 @@ func UpdateCategory(c *gin.Context) {
 	}
 
 	var body struct {
-		Category  string `json:"category"`
-		IsExpense bool   `json:"is_expense"`
+		Category    string `json:"category"`
+		IsExpense   bool   `json:"is_expense"`
 		Description string `json:"description"`
+		Confirmed   *bool  `json:"confirmed"`
 	}
 
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -47,8 +48,23 @@ func UpdateCategory(c *gin.Context) {
 		return
 	}
 
-	// bulk update every entry with the same merchant
-	affected, err := repository.UpdateByMerchant(tx.Merchant, body.Category, body.IsExpense, body.Description)
+	if body.Confirmed != nil && *body.Confirmed {
+		// bulk update every entry with the same merchant
+		affected, err := repository.UpdateByMerchant(tx.Merchant, body.Category, body.IsExpense, body.Description, true)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":  "updated",
+			"affected": affected,
+		})
+		return
+	}
+
+	// single transaction update
+	err = repository.UpdateByID(id, body.Category, body.IsExpense, body.Description)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -56,6 +72,6 @@ func UpdateCategory(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":  "updated",
-		"affected": affected,
+		"affected": 1,
 	})
 }
