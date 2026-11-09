@@ -5,35 +5,55 @@ import (
 
 	"scalar-rebuild/internal/db"
 	"scalar-rebuild/internal/email"
+	"scalar-rebuild/internal/repository"
 	"scalar-rebuild/internal/routes"
+	"scalar-rebuild/internal/setup"
 
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
 )
 
-func main() {
-	// load .env
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, relying on system environment variables")
+// an empty database gets the initial pull, otherwise the normal check
+func checkFirstTime() {
+	hasData, err := repository.HasTransactions()
+	if err != nil {
+		log.Printf("failed to read transactions: %v", err)
+		return
 	}
+
+	if hasData {
+		email.Check()
+		return
+	}
+
+	if _, err := email.Pull(); err != nil {
+		log.Printf("failed to run initial pull: %v", err)
+	}
+}
+
+func main() {
+	setup.LoadEnv()
+
 	// init database
 	db.Init()
 
-	// start email checker immediately in background
-	go email.Check()
+	// without gmail or ollama the api still serves what is saved
+	if setup.HasGmail() && setup.PrepareOllama() {
+		// start email checker immediately in background
+		go checkFirstTime()
 
-	// schedule email check every 30 minutes
-	c := cron.New()
-	_, err := c.AddFunc("@every 30m", func() {
-		log.Println("cron: running email check")
-		email.Check()
-	})
-	if err != nil {
-		log.Fatalf("failed to schedule cron: %v", err)
+		// schedule email check every 30 minutes
+		c := cron.New()
+		_, err := c.AddFunc("@every 30m", func() {
+			log.Println("cron: running email check")
+			email.Check()
+		})
+		if err != nil {
+			log.Fatalf("failed to schedule cron: %v", err)
+		}
+		c.Start()
+		defer c.Stop()
 	}
-	c.Start()
-	defer c.Stop()
 
 	// start gin
 	r := gin.Default()

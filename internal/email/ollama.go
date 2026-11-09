@@ -19,6 +19,8 @@ type TransactionResult struct {
 	IsExpense bool    `json:"is_expense"`
 }
 
+const Model = "llama3:8b"
+
 type ollamaRequest struct {
 	Model  string          `json:"model"`
 	Prompt string          `json:"prompt"`
@@ -96,7 +98,7 @@ Rules:
 Respond only with the JSON object.`, fewShot, subject, body)
 
 	reqBody, err := json.Marshal(ollamaRequest{
-		Model:  "llama3:8b",
+		Model:  Model,
 		Prompt: prompt,
 		Format: extractSchema,
 		Stream: false,

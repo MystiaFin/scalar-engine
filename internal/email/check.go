@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,6 +90,22 @@ type Summary struct {
 	Failed       int
 }
 
+const defaultPullLimit = 50
+
+func readPullLimit() uint32 {
+	raw := os.Getenv("SCALAR_INITIAL_PULL")
+	if raw == "" {
+		return defaultPullLimit
+	}
+
+	limit, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil || limit == 0 {
+		log.Fatalf("SCALAR_INITIAL_PULL must be a positive number, got %q", raw)
+	}
+
+	return uint32(limit)
+}
+
 func connect(readOnly bool) (*client.Client, *imap.MailboxStatus, error) {
 	emailAddress := os.Getenv("SCALAR_EMAIL")
 	appPassword := os.Getenv("SCALAR_APP_PASSWORD")
@@ -118,7 +135,11 @@ func connect(readOnly bool) (*client.Client, *imap.MailboxStatus, error) {
 }
 
 // read-only so old unread messages stay unread
-func Pull(limit uint32) (Summary, error) {
+func Pull() (Summary, error) {
+	limit := readPullLimit()
+
+	log.Printf("starting initial pull of the newest %d emails", limit)
+
 	c, mbox, err := connect(true)
 	if err != nil {
 		return Summary{}, err
@@ -139,7 +160,12 @@ func Pull(limit uint32) (Summary, error) {
 	seqset := new(imap.SeqSet)
 	seqset.AddRange(first, mbox.Messages)
 
-	return processMessages(c, seqset, int(mbox.Messages-first+1)), nil
+	summary := processMessages(c, seqset, int(mbox.Messages-first+1))
+
+	log.Printf("initial pull done: fetched=%d passed_filter=%d saved=%d skipped=%d failed=%d",
+		summary.Fetched, summary.PassedFilter, summary.Saved, summary.Skipped, summary.Failed)
+
+	return summary, nil
 }
 
 func Check() {

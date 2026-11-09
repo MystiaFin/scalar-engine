@@ -21,43 +21,27 @@ Nix is optional. On Windows, follow [Windows quick start](#windows-quick-start).
 
 ## Windows quick start
 
-These steps use PowerShell and don't need Nix or a C compiler. The model needs about 8 GB of RAM.
+Use PowerShell. You don't need Nix or a C compiler, and the model needs about 8 GB of RAM.
 
-**1. Install the tools.** Close and reopen PowerShell afterwards, so the new commands are found.
+**1. Install the tools**, then close and reopen PowerShell so the new commands are found.
 
 ```powershell
 winget install Git.Git GoLang.Go Ollama.Ollama
 ```
 
-Ollama runs in the background on Windows, so you don't need `ollama serve`.
-
-**2. Get the project and the model.**
+**2. Get the project and run it.** The first run creates `.env` for you and stops.
 
 ```powershell
 git clone https://github.com/MystiaFin/scalar-engine
 cd scalar-engine
-Copy-Item .env.example .env
-ollama pull llama3:8b
+.\run
 ```
 
 **3. Fill in `.env`** with your own Gmail address and [App Password](https://support.google.com/accounts/answer/185833). `notepad .env` opens it.
 
-**4. Pull your first emails**, then start the server. Run both from the repo folder, because `keywords.json` and `scalar.db` are looked up relative to it.
-
-```powershell
-go run ./cmd/pull
-go run ./cmd/main.go
-```
-
-**5. Check the data** from a second PowerShell window. Use `curl.exe`, because `curl` in PowerShell is a different command.
-
-```powershell
-curl.exe localhost:7225/api/transactions
-```
+**4. Run it again.** `.\run` is the only command you need from now on, and `.\run test` runs the tests.
 
 To see the data in the app, run [scalar_mobile](https://github.com/MystiaFin/scalar_mobile) next to the server.
-
-If `failed` in the pull summary isn't 0, Ollama probably wasn't running or the model wasn't downloaded. Fix that and run the pull again.
 
 ## Setup
 
@@ -66,8 +50,8 @@ If `failed` in the pull summary isn't 0, Ollama probably wasn't running or the m
 git clone https://github.com/MystiaFin/scalar-engine
 cd scalar-engine
 
-# Copy and fill in your environment
-cp .env.example .env
+# The first run creates .env, then fill it in
+./run.sh
 ```
 
 **.env:**
@@ -85,28 +69,34 @@ SCALAR_INITIAL_PULL=50
 
 ## Running
 
-To backfill older emails, run the one-time initial pull first. It needs Ollama running, is not limited to the last 14 days, leaves your messages unread, and skips emails it has already saved if you run it again:
+| Linux and macOS | Windows | What it does |
+|---|---|---|
+| `./run.sh` | `.\run` | Starts Scalar |
+| `./run.sh test` | `.\run test` | Runs the tests |
+| `./run.sh pull` | `.\run pull` | Reads older emails |
 
-```bash
-ollama pull llama3:8b
-go run ./cmd/pull
-```
+`./run.sh` uses the Nix dev shell automatically if Ollama isn't installed and Nix is.
 
-Then start the server:
+### What the run command does
 
-```bash
-go run cmd/main.go
-```
+1. Creates `.env` from `.env.example` if it's missing, and stops until you've filled it in.
+2. Starts Ollama if it isn't running, and downloads `llama3:8b` if it's missing. The download is about 4.5 GB and only happens once.
+3. Starts the server on `:7225`.
+4. Reads your emails in the background. An empty database gets the initial pull of `SCALAR_INITIAL_PULL` emails, which leaves them unread and isn't limited to the last 14 days. After that, it runs the normal check on every start and every 30 minutes, and that check can mark emails as read.
 
-The server starts on `:7225`:
-- **API** — `http://localhost:7225/api/transactions`
-- **Ollama** — expects `http://localhost:11434`
+If `SCALAR_EMAIL` or `SCALAR_APP_PASSWORD` is empty, or Ollama can't start, it skips reading emails and the API still serves what's saved.
 
-The server has no web page, so `/` returns 404. The data is read through the API or [scalar_mobile](https://github.com/MystiaFin/scalar_mobile).
+Transactions appear as each email is processed, at `http://localhost:7225/api/transactions`. The server has no web page, so `/` returns 404. The data is read through the API or [scalar_mobile](https://github.com/MystiaFin/scalar_mobile).
 
-The server checks Gmail when it starts and again every 30 minutes. This check can mark emails as read. If `SCALAR_EMAIL` or `SCALAR_APP_PASSWORD` is empty, the check is skipped and the server still starts.
+To read more older emails later, raise `SCALAR_INITIAL_PULL` and use the pull command. It skips emails already saved.
 
-### Nix
+## Testing
+
+Use `./run.sh test`, or `.\run test` on Windows.
+
+This tests the API against a temporary database. It doesn't need Gmail or Ollama, and it doesn't touch `scalar.db`.
+
+## Nix
 
 A `flake.nix` is provided for a reproducible dev shell on Linux and macOS. Ollama is only available inside this shell:
 
@@ -120,18 +110,19 @@ nix develop
 |--------|--------------------------|----------------------------------------------|
 | GET    | `/api/transactions`      | List all transactions, newest first          |
 | GET    | `/api/models`            | List the models available in local Ollama    |
-| PATCH  | `/api/transactions/:id`  | Update category, description, and expense flag for all entries by merchant  |
+| PATCH  | `/api/transactions/:id`  | Update one transaction, or every entry for its merchant when `confirmed` is true  |
 
 **PATCH body:**
 ```json
 {
   "category": "food & drink",
   "is_expense": true,
-  "description": "lunch at padang"
+  "description": "lunch at padang",
+  "confirmed": true
 }
 ```
 
-All fields are optional. This bulk-updates every transaction sharing the same merchant name, sets `confirmed = true`, and updates `description` if provided. Confirmed transactions are fed back as few-shot examples in future LLM prompts to improve accuracy.
+With `"confirmed": true`, this updates every transaction sharing the same merchant name and marks them confirmed. Without it, only this transaction changes. Confirmed transactions are fed back as few-shot examples in future LLM prompts to improve accuracy.
 
 ## Project structure
 
@@ -150,7 +141,11 @@ scalar-rebuild/
 │   ├── handlers/transaction.go     # HTTP handlers
 │   ├── models/transaction.go       # Transaction struct
 │   ├── repository/transaction.go   # SQL queries
-│   └── routes/routes.go            # Route registration
+│   ├── routes/routes.go            # Route registration
+│   ├── routes/routes_test.go       # API tests
+│   └── setup/setup.go              # First-run .env, Ollama and model setup
+├── run.sh                          # Run and test commands for Linux and macOS
+├── run.bat                         # Run and test commands for Windows
 ├── keywords.json                   # Expense/junk keyword lists
 ├── credentials.json                # (placeholder)
 ├── flake.nix                       # Nix dev shell

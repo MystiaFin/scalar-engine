@@ -19,6 +19,12 @@ func InsertTransaction(tx models.Transaction) error {
 	return err
 }
 
+func HasTransactions() (bool, error) {
+	var count int
+	err := db.DB.QueryRow(`SELECT COUNT(1) FROM transactions`).Scan(&count)
+	return count > 0, err
+}
+
 func ExistsByHash(hash string) (bool, error) {
 	var count int
 	err := db.DB.QueryRow(
