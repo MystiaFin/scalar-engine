@@ -85,7 +85,8 @@ func GetAll() ([]models.Transaction, error) {
 	}
 	defer rows.Close()
 
-	var results []models.Transaction
+	// empty list, so the api sends [] and not null
+	results := []models.Transaction{}
 	for rows.Next() {
 		var tx models.Transaction
 		var isExpense int
