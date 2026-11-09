@@ -80,35 +80,77 @@ func FetchCleanEmailText(msg *imap.Message, section *imap.BodySectionName) (stri
 	return "", fmt.Errorf("no text body found at all")
 }
 
-func Check() {
-	log.Println("starting IMAP email check")
+// what happened to the messages in one run
+type Summary struct {
+	Fetched      int
+	PassedFilter int
+	Saved        int
+	Skipped      int
+	Failed       int
+}
 
+func connect(readOnly bool) (*client.Client, *imap.MailboxStatus, error) {
 	emailAddress := os.Getenv("SCALAR_EMAIL")
 	appPassword := os.Getenv("SCALAR_APP_PASSWORD")
 
 	if emailAddress == "" || appPassword == "" {
-		log.Println("SCALAR_EMAIL or SCALAR_APP_PASSWORD environment variables not set. Skipping check.")
-		return
+		return nil, nil, fmt.Errorf("SCALAR_EMAIL or SCALAR_APP_PASSWORD environment variables not set")
 	}
 
 	log.Println("Connecting to imap.gmail.com:993...")
 	c, err := client.DialTLS("imap.gmail.com:993", nil)
 	if err != nil {
-		log.Printf("IMAP DialTLS error: %v", err)
-		return
+		return nil, nil, fmt.Errorf("IMAP DialTLS error: %w", err)
+	}
+
+	if err := c.Login(emailAddress, appPassword); err != nil {
+		c.Logout()
+		return nil, nil, fmt.Errorf("IMAP Login error: %w", err)
+	}
+
+	mbox, err := c.Select("INBOX", readOnly)
+	if err != nil {
+		c.Logout()
+		return nil, nil, fmt.Errorf("IMAP Select INBOX error: %w", err)
+	}
+
+	return c, mbox, nil
+}
+
+// read-only so old unread messages stay unread
+func Pull(limit uint32) (Summary, error) {
+	c, mbox, err := connect(true)
+	if err != nil {
+		return Summary{}, err
 	}
 	defer c.Logout()
 
-	if err := c.Login(emailAddress, appPassword); err != nil {
-		log.Printf("IMAP Login error: %v", err)
-		return
+	if mbox.Messages == 0 {
+		log.Println("Inbox is empty.")
+		return Summary{}, nil
 	}
 
-	mbox, err := c.Select("INBOX", false)
+	// sequence numbers follow arrival order, so the highest ones are the newest
+	first := uint32(1)
+	if mbox.Messages > limit {
+		first = mbox.Messages - limit + 1
+	}
+
+	seqset := new(imap.SeqSet)
+	seqset.AddRange(first, mbox.Messages)
+
+	return processMessages(c, seqset, int(mbox.Messages-first+1)), nil
+}
+
+func Check() {
+	log.Println("starting IMAP email check")
+
+	c, mbox, err := connect(false)
 	if err != nil {
-		log.Printf("IMAP Select INBOX error: %v", err)
+		log.Printf("skipping check: %v", err)
 		return
 	}
+	defer c.Logout()
 
 	if mbox.Messages == 0 {
 		log.Println("Inbox is empty.")
@@ -135,7 +177,13 @@ func Check() {
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uids...)
 
-	messages := make(chan *imap.Message, len(uids))
+	processMessages(c, seqset, len(uids))
+}
+
+func processMessages(c *client.Client, seqset *imap.SeqSet, count int) Summary {
+	var summary Summary
+
+	messages := make(chan *imap.Message, count)
 	go func() {
 		if err := c.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope}, messages); err != nil {
 			log.Printf("IMAP Envelope Fetch error: %v", err)
@@ -150,6 +198,8 @@ func Check() {
 	sort.Slice(allMsgs, func(i, j int) bool {
 		return allMsgs[i].Envelope.Date.After(allMsgs[j].Envelope.Date)
 	})
+
+	summary.Fetched = len(allMsgs)
 
 	log.Printf("processing %d messages, latest first", len(allMsgs))
 
@@ -166,16 +216,20 @@ func Check() {
 			continue
 		}
 
+		summary.PassedFilter++
+
 		parsedDate := date.Format("2006-01-02")
 		emailHash := hashMessageID(messageID)
 
 		exists, err := repository.ExistsByHash(emailHash)
 		if err != nil {
 			log.Printf("error checking hash: %v", err)
+			summary.Failed++
 			continue
 		}
 		if exists {
 			log.Printf("already processed, skipping: %s", subject)
+			summary.Skipped++
 			continue
 		}
 
@@ -190,9 +244,16 @@ func Check() {
 		}()
 
 		bodyMsg := <-bodyMessages
+		if bodyMsg == nil {
+			log.Printf("no body returned for %s", subject)
+			summary.Failed++
+			continue
+		}
+
 		body, err := FetchCleanEmailText(bodyMsg, section)
 		if err != nil {
 			log.Printf("error fetching clean text for %s: %v", subject, err)
+			summary.Failed++
 			continue
 		}
 
@@ -201,6 +262,7 @@ func Check() {
 		result, err := AskOllama(subject, body)
 		if err != nil {
 			log.Printf("ollama error: %v", err)
+			summary.Failed++
 			continue
 		}
 
@@ -213,6 +275,7 @@ func Check() {
 		} else if dupExists {
 			log.Printf("duplicate skipped (merchant=%s amount=%.0f date=%s): %s",
 				result.Merchant, result.Amount, parsedDate, subject)
+			summary.Skipped++
 			continue
 		}
 
@@ -227,9 +290,13 @@ func Check() {
 
 		if err := repository.InsertTransaction(tx); err != nil {
 			log.Printf("failed to insert transaction: %v", err)
+			summary.Failed++
 			continue
 		}
 
+		summary.Saved++
 		log.Printf("saved: %s — %.0f — %s", tx.Merchant, tx.Amount, tx.Category)
 	}
+
+	return summary
 }
